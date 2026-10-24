@@ -5,6 +5,8 @@ mod socket_path;
 
 mod local_nvim;
 
+mod config;
+
 pub mod n_impl;
 
 pub mod ns_impl;

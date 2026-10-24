@@ -1,3 +1,4 @@
+use crate::config::{NvimPath, get_dual_config};
 use crate::local_nvim::{Stdio, async_nvim::Nvim};
 use crate::socket_path;
 
@@ -39,8 +40,8 @@ impl Termination for InheritedTermination {
     }
 }
 
-fn connect_to_nvim_server(nvim_sock: &Path) -> Result<Child, IoError> {
-    Nvim::new(Stdio::Inherit)
+fn connect_to_nvim_server(nvim_path: &NvimPath, nvim_sock: &Path) -> Result<Child, IoError> {
+    Nvim::new(Stdio::Inherit, nvim_path)
         .args(["--remote-ui", "--server"])
         .arg(nvim_sock)
         .spawn()
@@ -103,6 +104,8 @@ async fn forward_socket<H: Handler + Send + 'static>(
 }
 
 async fn start_remote_nvim(
+    remote_nvim_path: &NvimPath,
+    local_nvim_path: &NvimPath,
     remote_host: &str,
     local_nvim_sock: &Path,
 ) -> ControlFlow<(), JoinHandle<()>> {
@@ -181,7 +184,8 @@ async fn start_remote_nvim(
         let cmd = Command::new()
             .env("NVIM_SOCK", &remote_sock)
             .prog("nohup")
-            .args(["nvim", "--listen", &remote_sock, "--headless"])
+            .arg(remote_nvim_path.as_prog())
+            .args(["--listen", &remote_sock, "--headless"])
             .redirect(Redirect::Stdin {
                 to: RedirectPath("/dev/null"),
             })
@@ -205,17 +209,11 @@ async fn start_remote_nvim(
         let task = forward_socket(conn, local_nvim_sock, &remote_sock).await?;
 
         loop {
-            use std::process::Stdio;
             use std::time::Duration;
-            use tokio::process::Command;
 
-            let Ok(mut child) = Command::new("nvim")
+            let Ok(mut child) = Nvim::new(Stdio::Discard, local_nvim_path)
                 .args(["--remote-send", "<esc>", "--server"])
                 .arg(local_nvim_sock)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
                 .spawn()
             else {
                 return ControlFlow::Break(());
@@ -244,14 +242,25 @@ pub async fn cli_impl() -> impl Termination {
         return InheritedTermination::Other;
     };
 
+    let (local_config, remote_config) = {
+        let config = get_dual_config(None, &remote_host);
+        (config.local, config.remote)
+    };
+
     let local_nvim_sock = socket_path::local_socket_with_remote(&remote_host);
 
-    let ControlFlow::Continue(task) = start_remote_nvim(&remote_host, &local_nvim_sock).await
+    let ControlFlow::Continue(task) = start_remote_nvim(
+        &remote_config.nvim,
+        &local_config.nvim,
+        &remote_host,
+        &local_nvim_sock,
+    )
+    .await
     else {
         return InheritedTermination::Other;
     };
 
-    let child = connect_to_nvim_server(&local_nvim_sock);
+    let child = connect_to_nvim_server(&local_config.nvim, &local_nvim_sock);
     let ret = tail_wait(child).await;
 
     task.abort();

@@ -1,3 +1,4 @@
+use crate::config::{NvimPath, get_local_config};
 use crate::local_nvim::{Stdio, sync_nvim::Nvim};
 use crate::socket_path;
 
@@ -34,10 +35,11 @@ impl Termination for InheritedTermination {
 }
 
 fn start_nvim_server<T: AsRef<OsStr>>(
+    nvim_path: &NvimPath,
     nvim_sock: &Path,
     files: impl IntoIterator<Item = T>,
 ) -> Result<Child, IoError> {
-    Nvim::new(Stdio::Inherit)
+    Nvim::new(Stdio::Inherit, nvim_path)
         .args(["-O3", "--listen"])
         .arg(nvim_sock)
         .args(files)
@@ -45,8 +47,8 @@ fn start_nvim_server<T: AsRef<OsStr>>(
         .spawn()
 }
 
-fn connect_to_nvim_server(nvim_sock: &Path) -> Result<Child, IoError> {
-    Nvim::new(Stdio::Inherit)
+fn connect_to_nvim_server(nvim_path: &NvimPath, nvim_sock: &Path) -> Result<Child, IoError> {
+    Nvim::new(Stdio::Inherit, nvim_path)
         .args(["--remote-ui", "--server"])
         .arg(nvim_sock)
         .spawn()
@@ -72,10 +74,15 @@ fn tail_wait(res: Result<Child, IoError>) -> InheritedTermination {
     }
 }
 
-fn open_file(nvim_sock: &Path, files: impl IntoIterator<Item = OsString>) {
-    fn open_file_impl(nvim_sock: PathBuf, files: [Option<OsString>; 3], cwd: Option<PathBuf>) {
+fn open_file(nvim_path: &NvimPath, nvim_sock: &Path, files: [Option<OsString>; 3]) {
+    fn open_file_impl(
+        nvim_path: &NvimPath,
+        nvim_sock: PathBuf,
+        files: [Option<OsString>; 3],
+        cwd: Option<PathBuf>,
+    ) {
         if let Some(cwd) = cwd {
-            let child = Nvim::new(Stdio::Discard)
+            let child = Nvim::new(Stdio::Discard, nvim_path)
                 .arg("--server")
                 .arg(&nvim_sock)
                 .arg("--remote-expr")
@@ -87,7 +94,7 @@ fn open_file(nvim_sock: &Path, files: impl IntoIterator<Item = OsString>) {
         }
 
         for file in files.iter().flatten() {
-            let child = Nvim::new(Stdio::Discard)
+            let child = Nvim::new(Stdio::Discard, nvim_path)
                 .arg("--server")
                 .arg(&nvim_sock)
                 .arg("--remote-expr")
@@ -99,23 +106,13 @@ fn open_file(nvim_sock: &Path, files: impl IntoIterator<Item = OsString>) {
         }
     }
 
-    let files: [Option<OsString>; 3] = {
-        let mut files = files.into_iter();
-
-        let mut buf = [None, None, None];
-
-        buf[0] = files.next();
-        buf[1] = files.next();
-        buf[2] = files.next();
-
-        buf
-    };
     let cwd = env::current_dir().ok();
 
+    let nvim_path = nvim_path.clone();
     let nvim_sock = nvim_sock.to_path_buf();
 
-    std::thread::spawn(|| {
-        open_file_impl(nvim_sock, files, cwd);
+    std::thread::spawn(move || {
+        open_file_impl(&nvim_path, nvim_sock, files, cwd);
     });
 }
 
@@ -127,15 +124,29 @@ fn is_socket(path: &Path) -> bool {
 }
 
 pub fn cli_impl() -> impl Termination {
+    let config = get_local_config(None);
+
     let nvim_sock = socket_path::local_socket();
 
     if is_socket(&nvim_sock) {
-        open_file(&nvim_sock, env::args_os().skip(1));
+        let files: [Option<OsString>; 3] = {
+            let mut files = env::args_os().skip(1);
 
-        let child = connect_to_nvim_server(&nvim_sock);
+            let mut buf = [None, None, None];
+
+            buf[0] = files.next();
+            buf[1] = files.next();
+            buf[2] = files.next();
+
+            buf
+        };
+
+        open_file(&config.nvim, &nvim_sock, files);
+
+        let child = connect_to_nvim_server(&config.nvim, &nvim_sock);
         tail_wait(child)
     } else {
-        let child = start_nvim_server(&nvim_sock, env::args_os().skip(1));
+        let child = start_nvim_server(&config.nvim, &nvim_sock, env::args_os().skip(1));
         tail_wait(child)
     }
 }
