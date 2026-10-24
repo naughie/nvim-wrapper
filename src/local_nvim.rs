@@ -7,7 +7,7 @@ pub enum Stdio {
 pub mod sync_nvim {
     use super::Stdio;
 
-    use crate::config::NvimPath;
+    use crate::config::LocalNvimPath;
 
     use std::ffi::OsStr;
     use std::io::Result;
@@ -18,7 +18,7 @@ pub mod sync_nvim {
     }
 
     impl Nvim {
-        pub fn new(io: Stdio, nvim_path: &NvimPath) -> Self {
+        pub fn new(io: Stdio, nvim_path: &LocalNvimPath) -> Self {
             let mut cmd = Command::new(nvim_path);
 
             match io {
@@ -65,7 +65,7 @@ pub mod sync_nvim {
 pub mod async_nvim {
     use super::Stdio;
 
-    use crate::config::NvimPath;
+    use crate::config::LocalNvimPath;
 
     use std::ffi::OsStr;
     use std::io::Result;
@@ -76,7 +76,7 @@ pub mod async_nvim {
     }
 
     impl Nvim {
-        pub fn new(io: Stdio, nvim_path: &NvimPath) -> Self {
+        pub fn new(io: Stdio, nvim_path: &LocalNvimPath) -> Self {
             let mut cmd = Command::new(nvim_path);
 
             cmd.kill_on_drop(true);

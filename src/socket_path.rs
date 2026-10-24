@@ -1,6 +1,7 @@
 use core::fmt::NumBuffer;
 use std::ffi::OsStr;
 use std::fmt;
+use std::io::Error;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::Uid;
@@ -93,4 +94,33 @@ pub fn remote_socket_on_linux(
     }
 
     SockPath(remote_uid, remote_host)
+}
+
+pub fn create_socket_dir_sync(socket: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    if let Some(parent) = socket.parent()
+        && !parent.exists()
+    {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn create_socket_dir_async(socket: &Path) -> Result<(), Error> {
+    if let Some(parent) = socket.parent()
+        && !parent.exists()
+    {
+        tokio::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .await
+    } else {
+        Ok(())
+    }
 }

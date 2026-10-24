@@ -1,4 +1,4 @@
-use crate::config::{NvimPath, get_dual_config};
+use crate::config::{LocalNvimPath, RemoteNvimPath, get_dual_config};
 use crate::local_nvim::{Stdio, async_nvim::Nvim};
 use crate::socket_path;
 
@@ -40,7 +40,7 @@ impl Termination for InheritedTermination {
     }
 }
 
-fn connect_to_nvim_server(nvim_path: &NvimPath, nvim_sock: &Path) -> Result<Child, IoError> {
+fn connect_to_nvim_server(nvim_path: &LocalNvimPath, nvim_sock: &Path) -> Result<Child, IoError> {
     Nvim::new(Stdio::Inherit, nvim_path)
         .args(["--remote-ui", "--server"])
         .arg(nvim_sock)
@@ -104,8 +104,8 @@ async fn forward_socket<H: Handler + Send + 'static>(
 }
 
 async fn start_remote_nvim(
-    remote_nvim_path: &NvimPath,
-    local_nvim_path: &NvimPath,
+    remote_nvim_path: &RemoteNvimPath,
+    local_nvim_path: &LocalNvimPath,
     remote_host: &str,
     local_nvim_sock: &Path,
 ) -> ControlFlow<(), JoinHandle<()>> {
@@ -248,6 +248,9 @@ pub async fn cli_impl() -> impl Termination {
     };
 
     let local_nvim_sock = socket_path::local_socket_with_remote(&remote_host);
+    if let Err(e) = socket_path::create_socket_dir_async(&local_nvim_sock).await {
+        return InheritedTermination::Io(e);
+    }
 
     let ControlFlow::Continue(task) = start_remote_nvim(
         &remote_config.nvim,

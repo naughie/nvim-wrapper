@@ -21,22 +21,31 @@ fn config_file(path: Option<&Path>) -> Option<String> {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct NvimPath(Cow<'static, str>);
+struct NvimPath(Cow<'static, str>);
+#[derive(Clone, Debug, Default)]
+pub struct LocalNvimPath(NvimPath);
+#[derive(Debug, Default)]
+pub struct RemoteNvimPath(NvimPath);
 
-impl AsRef<OsStr> for NvimPath {
+impl AsRef<OsStr> for LocalNvimPath {
     fn as_ref(&self) -> &OsStr {
-        OsStr::new(&*self.0)
+        OsStr::new(&*self.0.0)
     }
 }
-impl PartialEq<str> for NvimPath {
+impl PartialEq<str> for LocalNvimPath {
     fn eq(&self, other: &str) -> bool {
-        self.0 == other
+        self.0.0 == other
+    }
+}
+impl PartialEq<str> for RemoteNvimPath {
+    fn eq(&self, other: &str) -> bool {
+        self.0.0 == other
     }
 }
 
-impl NvimPath {
+impl RemoteNvimPath {
     pub fn as_prog(&self) -> impl openrussh_client::process::Arg {
-        &*self.0
+        &*self.0.0
     }
 }
 
@@ -48,8 +57,33 @@ impl Default for NvimPath {
 
 #[derive(Default, Deserialize)]
 #[serde(default)]
-pub struct NvimConfig {
-    pub nvim: NvimPath,
+struct NvimConfig {
+    nvim: NvimPath,
+}
+
+#[derive(Default)]
+pub struct LocalNvimConfig {
+    pub nvim: LocalNvimPath,
+}
+#[derive(Default)]
+pub struct RemoteNvimConfig {
+    pub nvim: RemoteNvimPath,
+}
+
+impl LocalNvimConfig {
+    fn from_conf(config: NvimConfig) -> Self {
+        Self {
+            nvim: LocalNvimPath(config.nvim),
+        }
+    }
+}
+
+impl RemoteNvimConfig {
+    fn from_conf(config: NvimConfig) -> Self {
+        Self {
+            nvim: RemoteNvimPath(config.nvim),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -204,10 +238,10 @@ where
     }
 }
 
-fn parse_local_config(toml: &str) -> NvimConfig {
-    struct LocalConfig(NvimConfig);
+fn parse_local_config(toml: &str) -> LocalNvimConfig {
+    struct LocalConfigImpl(NvimConfig);
 
-    impl<'de> Deserialize<'de> for LocalConfig {
+    impl<'de> Deserialize<'de> for LocalConfigImpl {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
             D: Deserializer<'de>,
@@ -221,12 +255,12 @@ fn parse_local_config(toml: &str) -> NvimConfig {
         }
     }
 
-    toml::from_str::<LocalConfig>(toml)
-        .map(|config| config.0)
+    toml::from_str::<LocalConfigImpl>(toml)
+        .map(|config| LocalNvimConfig::from_conf(config.0))
         .unwrap_or_default()
 }
 
-pub fn get_local_config(config_path: Option<&Path>) -> NvimConfig {
+pub fn get_local_config(config_path: Option<&Path>) -> LocalNvimConfig {
     config_file(config_path)
         .map(|toml| parse_local_config(&toml))
         .unwrap_or_default()
@@ -234,15 +268,21 @@ pub fn get_local_config(config_path: Option<&Path>) -> NvimConfig {
 
 #[derive(Default)]
 pub struct DualConfig {
-    pub local: NvimConfig,
-    pub remote: NvimConfig,
+    pub local: LocalNvimConfig,
+    pub remote: RemoteNvimConfig,
 }
 
 fn parse_dual_config(toml: &str, host: &str) -> DualConfig {
+    #[derive(Default)]
+    struct DualConfigImpl {
+        local: NvimConfig,
+        remote: NvimConfig,
+    }
+
     struct DualConfigSeed<'a>(&'a str);
 
     impl<'de> DeserializeSeed<'de> for DualConfigSeed<'_> {
-        type Value = DualConfig;
+        type Value = DualConfigImpl;
 
         fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
         where
@@ -262,12 +302,16 @@ fn parse_dual_config(toml: &str, host: &str) -> DualConfig {
                 },
             }
             .deserialize(deserializer)
-            .map(|[local, remote]| DualConfig { local, remote })
+            .map(|[local, remote]| DualConfigImpl { local, remote })
         }
     }
 
     toml::de::Deserializer::parse(toml)
         .and_then(|deserializer| DualConfigSeed(host).deserialize(deserializer))
+        .map(|config| DualConfig {
+            local: LocalNvimConfig::from_conf(config.local),
+            remote: RemoteNvimConfig::from_conf(config.remote),
+        })
         .unwrap_or_default()
 }
 
