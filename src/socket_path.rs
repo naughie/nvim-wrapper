@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use nix::unistd::Uid;
 
+#[cfg(target_os = "linux")]
 fn get_uid() -> Uid {
     Uid::current()
 }
@@ -27,12 +28,12 @@ fn push_local_socket_with_remote(path: &mut PathBuf, host: impl AsRef<OsStr>) {
 
 #[cfg(target_os = "macos")]
 fn local_socket_root_on_mac() -> PathBuf {
-    let uid = get_uid().as_raw();
-
-    let mut buf = NumBuffer::new();
-    let uid = uid.format_into(&mut buf);
-
-    Path::new("/var/run/nvim").join(uid)
+    std::env::home_dir()
+        .map(|mut path| {
+            path.push(".local/state/wrapper.nvim");
+            path
+        })
+        .unwrap_or_else(|| Path::new(".local/state/wrapper.nvim").to_path_buf())
 }
 
 #[cfg(target_os = "linux")]
