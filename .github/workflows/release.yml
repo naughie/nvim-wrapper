@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-24.04
+    outputs:
+      valid: ${{ steps.validate.outputs.valid }}
+    steps:
+      - name: Check vX.Y.Z tag format
+        id: validate
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping tag '$TAG': expected vX.Y.Z."
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: validate-tag
+    if: needs.validate-tag.outputs.valid == 'true'
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+    env:
+      TARGET: ${{ matrix.target }}
+      TAG: ${{ github.ref_name }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install MUSL linker
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          case "$TARGET" in
+            x86_64-unknown-linux-musl)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+              ;;
+            aarch64-unknown-linux-musl)
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target "$TARGET"
+
+      - name: Test
+        run: cargo +stable test --locked --target "$TARGET"
+
+      - name: Build release binaries
+        run: cargo +stable build --locked --release --bins --target "$TARGET"
+
+      - name: Package release archive
+        run: |
+          package="n-${TAG}-${TARGET}"
+          mkdir -p "dist/$package"
+          cp "target/$TARGET/release/n" "target/$TARGET/release/ns" "dist/$package/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$package/"
+          tar -czf "dist/$package.tar.gz" -C dist "$package"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create release with all six archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          archives=(dist/*.tar.gz)
+          if [[ ${#archives[@]} -ne 6 ]]; then
+            echo "Expected six release archives, found ${#archives[@]}." >&2
+            exit 1
+          fi
+          # Keep the release private as a draft until every asset is uploaded.
+          gh release create "$TAG" "${archives[@]}" \
+            --verify-tag --title "$TAG" --generate-notes --draft
+          gh release edit "$TAG" --draft=false
